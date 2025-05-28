@@ -136,9 +136,91 @@ try {
     }
   }
 
-  interface Message {
-    type: string;
-    value?: any;
+  // interface Message {
+  //   type: string;
+  //   value?: any;
+  // }
+
+  type Message = LoadProgramMessage
+    | ContinueMessage
+    | GetStackMessage
+    | GetScopesMessage
+    | GetBreakpointsForLineMessage
+    | SetBreakpointMessage
+    | GetVariablesMessage
+    | SetVariableMessage
+    // EXTRA
+    | StartDebugLoggingMessage
+    | StopDebugLoggingMessage;
+
+  // COPIED FROM StarlingMonkeyRuntime.ts
+
+  interface LoadProgramMessage {
+    type: 'loadProgram';
+    value: string; // source file
+  }
+
+  interface ContinueMessage {
+    type: 'continue' | 'next' | 'stepIn' | 'stepOut';
+    value?: undefined,
+  }
+
+  interface GetStackMessage {
+    type: 'getStack';
+    value: {
+      index: number;
+      count: number;
+    }
+  }
+
+  interface GetScopesMessage {
+    type: 'getScopes';
+    value: number; // frameId
+  }
+
+  interface GetBreakpointsForLineMessage {
+    type: 'getBreakpointsForLine';
+    value: {
+      path: string;
+      line: number;
+    }
+  }
+
+  interface GetVariablesMessage {
+    type: 'getVariables';
+    value: number; // reference
+  }
+
+  // COPIED BUT MODIFIED
+
+  interface SetBreakpointMessage {
+    type: 'setBreakpoint';
+    value: {
+      path: string;
+      line: number;
+      column: number;  // this is optional in SMR
+    }
+  }
+
+  interface SetVariableMessage {
+    type: 'setVariable';
+    value: {
+      variablesReference: number;
+      name: string;
+      value: any;
+    } // in SMR this a string of manually encoded JSON text because reasons I guess
+  }
+
+  // END COPY / MODIFIED
+
+  // These seem to be commented out in SMR
+
+  interface StartDebugLoggingMessage {
+    type: 'startDebugLogging';
+  }
+
+  interface StopDebugLoggingMessage {
+    type: 'stopDebugLogging';
   }
 
   function waitForSocket(): void {
@@ -189,7 +271,7 @@ try {
             break;
           default:
             LOG && print(
-                `Invalid message received, continuing execution. Message: ${message.type}`
+                `Invalid message received, continuing execution. Message: ${(<any>message).type}`
               );
             currentFrame = undefined;
             return;
@@ -543,13 +625,13 @@ try {
       return formatValue(descriptor.value);
     }
 
-    let formatted;
+    let formatted = "";  // TODO: it's not definitely assigned in the logic - what should happen if not assigned before the return? Return val implies it must be defined but maybe that's an artifact of me cranking up strictness
     if (descriptor.get) {
-      formatted = formatValue(descriptor.get);
+      formatted = formatValue(descriptor.get).value;  // TODO: nothing is declared and it didn't typecheck.  Added .value as it's my best guess but is that right???
     }
 
     if (descriptor.set) {
-      let setter = formatValue(descriptor.set);
+      let setter = formatValue(descriptor.set).value;  // TODO: again added .value but not sure
       if (formatted) {
         formatted += `, ${setter}`;
       } else {
@@ -573,7 +655,9 @@ try {
     return frame;
   }
 
-  function sendMessage(type, value?) {
+  // TODO: message types?  Although this is some special protocol
+  // But the set of messages looks a *LOT* like the CR->SMR messages (IRuntimeMessage).
+  function sendMessage(type: string, value?: any) {
     const messageStr = JSON.stringify({ type, value });
     LOG && print(`sending message: ${messageStr}`);
     socket.send(`${messageStr.length}\n${messageStr}`);

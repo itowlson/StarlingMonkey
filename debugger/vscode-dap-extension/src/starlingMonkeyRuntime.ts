@@ -2,7 +2,6 @@ import { Scope } from "@vscode/debugadapter";
 import { EventEmitter } from "events";
 import * as Net from "net";
 import { Signal } from "./signals.js";
-import { assert } from "console";
 import { Terminal, TerminalShellExecution, window } from "vscode";
 
 export interface FileAccessor {
@@ -28,12 +27,145 @@ interface IRuntimeStackFrame {
 
 interface IRuntimeStack {
   count: number;
-  frames: IRuntimeStackFrame[];
+  frames: ReadonlyArray<IRuntimeStackFrame>;
 }
 
-interface IRuntimeMessage {
-  type: string;
-  value: any;
+// TODO: not sure where this is coming from
+type OutputType = 'prio' | 'out' | 'err' | 'console';
+
+// Events raised from the SMRuntime to the SMDebugger (via `emit`, so
+// in-process).
+type RuntimeEventMap = {
+  programLoaded: [],
+  output: [type: OutputType, text: string, filePath: string, line: number, column: number],
+  stopOnEntry: [],
+  stopOnBreakpoint: [],
+  stopOnDataBreakpoint: [],
+  stopOnInstructionBreakpoint: [],
+  stopOnException: [exception: any | undefined],
+  stopOnStep: [],
+  end: [],
+}
+
+// Messages sent from the SMRuntime to the ComponentResourceInstance.
+// These are sent as JSON via the SMR _server socket.
+//
+// These appear to be sent but it's not clear if all of them
+// are processed by the CRI
+type IInstanceMessage = LoadProgramMessage
+  | ContinueMessage
+  | GetStackMessage
+  | GetScopesMessage
+  | GetBreakpointsForLineMessage
+  | SetBreakpointMessage
+  | GetVariablesMessage
+  | SetVariableMessage;
+
+interface LoadProgramMessage {
+  type: 'loadProgram';
+  value: string; // source file
+}
+
+interface ContinueMessage {
+  type: 'continue' | 'next' | 'stepIn' | 'stepOut';
+  value?: undefined,
+}
+
+interface GetStackMessage {
+  type: 'getStack';
+  value: {
+    index: number;
+    count: number;
+  }
+}
+
+interface GetScopesMessage {
+  type: 'getScopes';
+  value: number; // frameId
+}
+
+interface GetBreakpointsForLineMessage {
+  type: 'getBreakpointsForLine';
+  value: {
+    path: string;
+    line: number;
+  }
+}
+
+interface SetBreakpointMessage {
+  type: 'setBreakpoint';
+  value: {
+    path: string;
+    line: number;
+    column?: number;
+  }
+}
+
+interface GetVariablesMessage {
+  type: 'getVariables';
+  value: number; // reference
+}
+
+interface SetVariableMessage {
+  type: 'setVariable';
+  value: string; // manually encoded JSON text
+}
+
+// Messages from the ComponentRuntimeInstance to the SMRuntime,
+// received as JSON via SMRuntime._server socket.
+export type IRuntimeMessage = IConnectMessage
+  | IProgramLoadedMessage
+  | IBreakpointHitMessage
+  | IStopOnStepMessage
+  | IGetStackMessage
+  | IScopesMessage
+  | IBreakpointsForLineMessage
+  | IBreakpointSetMessage
+  | IVariablesMessage
+  | IVariableSetMessage;
+
+interface IConnectMessage {
+  type: 'connect';
+}
+interface IProgramLoadedMessage {
+  type: 'programLoaded';
+}
+interface IBreakpointHitMessage {
+  type: 'breakpointHit';
+}
+interface IStopOnStepMessage {
+  type: 'stopOnStep';
+}
+interface IGetStackMessage {
+  type: 'stack';
+  value: ReadonlyArray<IRuntimeStackFrame>;
+}
+interface IScopesMessage {
+  type: 'scopes';
+  value: ReadonlyArray<Scope>,
+}
+interface IBreakpointsForLineMessage {
+  type: 'breakpointsForLine';
+  value: ReadonlyArray<{
+    line: number;
+    column: number,
+  }>
+}
+interface IBreakpointSetMessage {
+  type: 'breakpointSet';
+  value: IRuntimeBreakpoint;
+}
+interface IVariablesMessage {
+  type: 'variables',
+  value: ReadonlyArray<IRuntimeVariable>,
+}
+interface IVariableSetMessage {
+  type: 'variableSet',
+  value: IRuntimeVariable,
+}
+
+function assert(condition: any, msg?: string): asserts condition {
+  console.assert(condition, msg);
 }
 
 interface IRuntimeVariable {
@@ -204,7 +336,7 @@ class ComponentRuntimeInstance {
   }
 }
 
-export class StarlingMonkeyRuntime extends EventEmitter {
+export class StarlingMonkeyRuntime extends EventEmitter<RuntimeEventMap> {
   private _debug!: boolean;
   private _stopOnEntry!: boolean;
   public get fileAccessor(): FileAccessor {
@@ -245,7 +377,7 @@ export class StarlingMonkeyRuntime extends EventEmitter {
       `expected "connect" message, got "${message.type}"`
     );
     // this.sendMessage("startDebugLogging");
-    message = await this.sendAndReceiveMessage("loadProgram", this._sourceFile);
+    message = await this.sendAndReceiveMessage({ type: "loadProgram", value: this._sourceFile });
     assert(
       message.type === "programLoaded",
       `expected "programLoaded" message, got "${message.type}"`
@@ -341,23 +473,22 @@ export class StarlingMonkeyRuntime extends EventEmitter {
     ComponentRuntimeInstance.setNextSessionPort(port);
   }
 
-  private sendMessage(type: string, value?: any, useRawValue = false) {
-    let message: string;
+  private sendMessage(message: IInstanceMessage, useRawValue = false) {
+    let json: string;
     if (useRawValue) {
-      message = `{"type": "${type}", "value": ${value}}`;
+      json = `{"type": "${message.type}", "value": ${message.value}}`;
     } else {
-      message = JSON.stringify({ type, value });
+      json = JSON.stringify(message);
     }
     // console.debug(`sending message to runtime: ${message}`);
-    this._socket.write(`${message.length}\n${message}`);
+    this._socket.write(`${json.length}\n${json}`);
   }
 
   private sendAndReceiveMessage(
-    type: string,
-    value?: any,
+    message: IInstanceMessage,
     useRawValue = false
-  ): Promise<any> {
-    this.sendMessage(type, value, useRawValue);
+  ): Promise<IRuntimeMessage> {
+    this.sendMessage(message, useRawValue);
     return this._messageReceived.wait();
   }
 
@@ -370,7 +501,7 @@ export class StarlingMonkeyRuntime extends EventEmitter {
   }
 
   public async continue() {
-    let message = await this.sendAndReceiveMessage("continue");
+    let message = await this.sendAndReceiveMessage({ type: "continue" });
     // TODO: handle other results, such as run to completion
     assert(
       message.type === "breakpointHit",
@@ -379,11 +510,11 @@ export class StarlingMonkeyRuntime extends EventEmitter {
     this.emit("stopOnBreakpoint");
   }
 
-  public next(granularity: "statement" | "line" | "instruction") {
+  public next(_granularity: "statement" | "line" | "instruction") {
     this.handleStep("next");
   }
 
-  public stepIn(targetId: number | undefined) {
+  public stepIn(_targetId: number | undefined) {
     this.handleStep("stepIn");
   }
 
@@ -392,7 +523,7 @@ export class StarlingMonkeyRuntime extends EventEmitter {
   }
 
   private async handleStep(type: "next" | "stepIn" | "stepOut") {
-    let message = await this.sendAndReceiveMessage(type);
+    let message = await this.sendAndReceiveMessage({ type });
     // TODO: handle other results, such as run to completion
     assert(
       message.type === "stopOnStep",
@@ -402,14 +533,15 @@ export class StarlingMonkeyRuntime extends EventEmitter {
   }
 
   public async stack(index: number, count: number): Promise<IRuntimeStack> {
-    let message = await this.sendAndReceiveMessage("getStack", {
+    let message = await this.sendAndReceiveMessage({ type: "getStack", value: {
       index,
       count,
-    });
+    }});
     assert(
       message.type === "stack",
       `expected "stack" message, got "${message.type}"`
     );
+    
     let stack = message.value;
     for (let frame of stack) {
       frame.file = this.qualifyPath(frame.file);
@@ -420,8 +552,8 @@ export class StarlingMonkeyRuntime extends EventEmitter {
     };
   }
 
-  async getScopes(frameId: number): Promise<Scope[]> {
-    let message = await this.sendAndReceiveMessage("getScopes", frameId);
+  async getScopes(frameId: number): Promise<ReadonlyArray<Scope>> {
+    let message = await this.sendAndReceiveMessage({ type: "getScopes", value: frameId });
     assert(
       message.type === "scopes",
       `expected "scopes" message, got "${message.type}"`
@@ -432,13 +564,13 @@ export class StarlingMonkeyRuntime extends EventEmitter {
   public async getBreakpointLocations(
     path: string,
     line: number
-  ): Promise<{ line: number; column: number }[]> {
+  ): Promise<ReadonlyArray<{ line: number; column: number }>> {
     // TODO: support the full set of query params from BreakpointLocationsArguments
     path = this.normalizePath(path);
-    let message = await this.sendAndReceiveMessage("getBreakpointsForLine", {
+    let message = await this.sendAndReceiveMessage({ type: "getBreakpointsForLine", value: {
       path,
       line,
-    });
+    }});
     assert(
       message.type === "breakpointsForLine",
       `expected "breakpointsForLine" message, got "${message.type}"`
@@ -452,11 +584,11 @@ export class StarlingMonkeyRuntime extends EventEmitter {
     column?: number
   ): Promise<IRuntimeBreakpoint> {
     path = this.normalizePath(path);
-    let response = await this.sendAndReceiveMessage("setBreakpoint", {
+    let response = await this.sendAndReceiveMessage({ type: "setBreakpoint", value: {
       path,
       line,
       column,
-    });
+    }});
     assert(
       response.type === "breakpointSet",
       `expected "breakpointSet" message, got "${response.type}"`
@@ -464,8 +596,8 @@ export class StarlingMonkeyRuntime extends EventEmitter {
     return response.value;
   }
 
-  public async getVariables(reference: number): Promise<IRuntimeVariable[]> {
-    let message = await this.sendAndReceiveMessage("getVariables", reference);
+  public async getVariables(reference: number): Promise<ReadonlyArray<IRuntimeVariable>> {
+    let message = await this.sendAndReceiveMessage({ type: "getVariables", value: reference });
     assert(
       message.type === "variables",
       `expected "variables" message, got "${message.type}"`
@@ -479,10 +611,10 @@ export class StarlingMonkeyRuntime extends EventEmitter {
     value: string
   ): Promise<IRuntimeVariable> {
     // Manually encode the value so that it'll be decoded as raw values by the runtime, instead of everything becoming a string.
+    // TODO: this seems extraordinarily illegal. What if value contains a double quote, etc. Or is it guaranteed not to by the debug protocol?
     let rawValue = `{"variablesReference": ${variablesReference}, "name": "${name}", "value": ${value}}`;
     let message = await this.sendAndReceiveMessage(
-      "setVariable",
-      rawValue,
+      { type: "setVariable", value: rawValue },
       true
     );
     assert(

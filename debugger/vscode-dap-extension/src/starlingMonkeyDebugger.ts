@@ -126,7 +126,7 @@ export class StarlingMonkeyDebugSession extends LoggingDebugSession {
 
   protected initializeRequest(
     response: DebugProtocol.InitializeResponse,
-    args: DebugProtocol.InitializeRequestArguments
+    _args: DebugProtocol.InitializeRequestArguments
   ): void {
     response.body = {
       ...response.body,
@@ -147,9 +147,9 @@ export class StarlingMonkeyDebugSession extends LoggingDebugSession {
   }
 
   protected disconnectRequest(
-    response: DebugProtocol.DisconnectResponse,
+    _response: DebugProtocol.DisconnectResponse,
     args: DebugProtocol.DisconnectArguments,
-    request?: DebugProtocol.Request
+    _request?: DebugProtocol.Request
   ): void {
     console.log(
       `disconnectRequest suspend: ${args.suspendDebuggee}, terminate: ${args.terminateDebuggee}`
@@ -177,8 +177,8 @@ export class StarlingMonkeyDebugSession extends LoggingDebugSession {
 
   protected setFunctionBreakPointsRequest(
     response: DebugProtocol.SetFunctionBreakpointsResponse,
-    args: DebugProtocol.SetFunctionBreakpointsArguments,
-    request?: DebugProtocol.Request
+    _args: DebugProtocol.SetFunctionBreakpointsArguments,
+    _request?: DebugProtocol.Request
   ): void {
     this.sendResponse(response);
   }
@@ -220,7 +220,7 @@ export class StarlingMonkeyDebugSession extends LoggingDebugSession {
   protected async breakpointLocationsRequest(
     response: DebugProtocol.BreakpointLocationsResponse,
     args: DebugProtocol.BreakpointLocationsArguments,
-    request?: DebugProtocol.Request
+    _request?: DebugProtocol.Request
   ): Promise<void> {
     // VSCode apparently sends this request before the `Initialized` event is sent.
     // In that case, we can't answer it yet and instead ignore it.
@@ -259,20 +259,19 @@ export class StarlingMonkeyDebugSession extends LoggingDebugSession {
     response: DebugProtocol.StackTraceResponse,
     args: DebugProtocol.StackTraceArguments
   ): void {
-    const startFrame =
-      typeof args.startFrame === "number" ? args.startFrame : 0;
-    const maxLevels = typeof args.levels === "number" ? args.levels : 1000;
+    const startFrame = args.startFrame || 0;
+    const maxLevels = args.levels || 1000;
 
     this._runtime.stack(startFrame, maxLevels).then((stk) => {
       response.body = {
-        stackFrames: stk.frames.map((f, ix) => {
+        stackFrames: stk.frames.map((f) => {
           const sf: DebugProtocol.StackFrame = new StackFrame(
             f.index,
             f.name,
             this.createSource(f.file),
             this.convertDebuggerLineToClient(f.line)
           );
-          if (typeof f.column === "number") {
+          if (f.column) {
             sf.column = this.convertDebuggerColumnToClient(f.column);
           }
 
@@ -293,17 +292,17 @@ export class StarlingMonkeyDebugSession extends LoggingDebugSession {
     args: DebugProtocol.ScopesArguments
   ): Promise<void> {
     let scopes = await this._runtime.getScopes(args.frameId);
-    response.body = { scopes };
+    response.body = { scopes: scopes.slice() };
     this.sendResponse(response);
   }
 
   protected async variablesRequest(
     response: DebugProtocol.VariablesResponse,
     args: DebugProtocol.VariablesArguments,
-    request?: DebugProtocol.Request
+    _request?: DebugProtocol.Request
   ): Promise<void> {
     let variables = await this._runtime.getVariables(args.variablesReference);
-    response.body = { variables };
+    response.body = { variables: variables.slice() };
     this.sendResponse(response);
   }
 
@@ -323,7 +322,7 @@ export class StarlingMonkeyDebugSession extends LoggingDebugSession {
 
   protected continueRequest(
     response: DebugProtocol.ContinueResponse,
-    args: DebugProtocol.ContinueArguments
+    _args: DebugProtocol.ContinueArguments
   ): void {
     this.sendResponse(response);
     this._runtime.continue();
@@ -347,7 +346,7 @@ export class StarlingMonkeyDebugSession extends LoggingDebugSession {
 
   protected stepOutRequest(
     response: DebugProtocol.StepOutResponse,
-    args: DebugProtocol.StepOutArguments
+    _args: DebugProtocol.StepOutArguments
   ): void {
     this._runtime.stepOut();
     this.sendResponse(response);
