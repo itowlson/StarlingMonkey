@@ -48,7 +48,8 @@ type RuntimeEventMap = {
 }
 
 // Messages sent from the SMRuntime to the ComponentResourceInstance.
-// These are sent as JSON via the SMR _server socket.
+// These are sent as JSON via the SMR _server socket (and then seem
+// to be passed on to the debugger.ts script).
 //
 // These appear to be sent but it's not clear if all of them
 // are processed by the CRI
@@ -59,7 +60,9 @@ type IInstanceMessage = LoadProgramMessage
   | GetBreakpointsForLineMessage
   | SetBreakpointMessage
   | GetVariablesMessage
-  | SetVariableMessage;
+  | SetVariableMessage
+  | StartDebugLoggingMessage
+  | StopDebugLoggingMessage;
 
 interface LoadProgramMessage {
   type: 'loadProgram';
@@ -109,6 +112,15 @@ interface GetVariablesMessage {
 interface SetVariableMessage {
   type: 'setVariable';
   value: string; // manually encoded JSON text
+}
+interface StartDebugLoggingMessage {
+  type: 'startDebugLogging';
+  value?: undefined;
+}
+
+interface StopDebugLoggingMessage {
+  type: 'stopDebugLogging';
+  value?: undefined;
 }
 
 // Messages from the ComponentRuntimeInstance to the SMRuntime,
@@ -418,6 +430,7 @@ export class StarlingMonkeyRuntime extends EventEmitter<RuntimeEventMap> {
 
     const handleData = async (data: string) => {
       if (!debuggerScriptSent) {
+        console.debug(`*** DEBUGGER SCRIPT NOT YET SENT. data=${data}`);
         if (data.toString() !== "get-debugger") {
           console.warn(
             `expected "get-debugger" message, got "${data.toString()}". Ignoring ...`
@@ -430,6 +443,9 @@ export class StarlingMonkeyRuntime extends EventEmitter<RuntimeEventMap> {
         debuggerScriptSent = true;
         return;
       }
+
+      // console.debug(`*** SUBSEQUENT FROM WHEREVER. data=${data}`);
+      console.debug(`<-- received: ${data}`);
 
       partialMessage += data;
 
@@ -452,6 +468,7 @@ export class StarlingMonkeyRuntime extends EventEmitter<RuntimeEventMap> {
         return;
       }
       let message = partialMessage.slice(0, expectedLength);
+      console.debug(`  <-- parsed: ${message}`);
       try {
         let parsed = JSON.parse(message);
         // console.debug(`received message ${partialMessage}`);
@@ -484,10 +501,21 @@ export class StarlingMonkeyRuntime extends EventEmitter<RuntimeEventMap> {
     this._socket.write(`${json.length}\n${json}`);
   }
 
+  // TODO: This doesn't work reliably because messages can be
+  // processed concurrently and so you cannot rely on responses
+  // matching up to messages (e.g. getting a BP Hit response after
+  // a Get BPs for Line message).
+  //
+  // Should we use something like correlation IDs? Or a more R/R
+  // protocol such as HTTP?
+  //
+  // ETA: We can't use something R/R because the `socket` object is given
+  // to use by StarlingMonkey and it's basic as.
   private sendAndReceiveMessage(
     message: IInstanceMessage,
     useRawValue = false
   ): Promise<IRuntimeMessage> {
+    console.debug(`--> send: ${message.type}`);
     this.sendMessage(message, useRawValue);
     return this._messageReceived.wait();
   }
@@ -525,6 +553,7 @@ export class StarlingMonkeyRuntime extends EventEmitter<RuntimeEventMap> {
   private async handleStep(type: "next" | "stepIn" | "stepOut") {
     let message = await this.sendAndReceiveMessage({ type });
     // TODO: handle other results, such as run to completion
+    // TODO: this can barf if the step lands you on a breakpoint
     assert(
       message.type === "stopOnStep",
       `expected "stopOnStep" message, got "${message.type}"`
@@ -575,6 +604,7 @@ export class StarlingMonkeyRuntime extends EventEmitter<RuntimeEventMap> {
       message.type === "breakpointsForLine",
       `expected "breakpointsForLine" message, got "${message.type}"`
     );
+    console.debug(`returning BPs, message.value=${message.value}`);
     return message.value;
   }
 
