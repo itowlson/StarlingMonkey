@@ -53,7 +53,8 @@ type RuntimeEventMap = {
 //
 // These appear to be sent but it's not clear if all of them
 // are processed by the CRI
-type IInstanceMessage = LoadProgramMessage
+type RuntimeToInstanceMessage =
+  | LoadProgramMessage
   | ContinueMessage
   | GetStackMessage
   | GetScopesMessage
@@ -125,7 +126,8 @@ interface StopDebugLoggingMessage {
 
 // Messages from the ComponentRuntimeInstance to the SMRuntime,
 // received as JSON via SMRuntime._server socket.
-export type IRuntimeMessage = IConnectMessage
+export type InstanceToRuntimeMessage =
+  | IConnectMessage
   | IProgramLoadedMessage
   | IBreakpointHitMessage
   | IStopOnStepMessage
@@ -361,7 +363,7 @@ export class StarlingMonkeyRuntime extends EventEmitter<RuntimeEventMap> {
   private _server!: Net.Server;
   private _socket!: Net.Socket;
 
-  private _messageReceived = new Signal<IRuntimeMessage, void>();
+  private _messageReceived = new Signal<InstanceToRuntimeMessage, void>();
 
   private _sourceFile!: string;
   public get sourceFile() {
@@ -490,7 +492,7 @@ export class StarlingMonkeyRuntime extends EventEmitter<RuntimeEventMap> {
     ComponentRuntimeInstance.setNextSessionPort(port);
   }
 
-  private sendMessage(message: IInstanceMessage, useRawValue = false) {
+  private sendMessage(message: RuntimeToInstanceMessage, useRawValue = false) {
     let json: string;
     if (useRawValue) {
       json = `{"type": "${message.type}", "value": ${message.value}}`;
@@ -512,9 +514,9 @@ export class StarlingMonkeyRuntime extends EventEmitter<RuntimeEventMap> {
   // ETA: We can't use something R/R because the `socket` object is given
   // to use by StarlingMonkey and it's basic as.
   private sendAndReceiveMessage(
-    message: IInstanceMessage,
+    message: RuntimeToInstanceMessage,
     useRawValue = false
-  ): Promise<IRuntimeMessage> {
+  ): Promise<InstanceToRuntimeMessage> {
     console.debug(`--> send: ${message.type}`);
     this.sendMessage(message, useRawValue);
     return this._messageReceived.wait();

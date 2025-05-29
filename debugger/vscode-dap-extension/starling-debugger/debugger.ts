@@ -1,3 +1,5 @@
+import type { InstanceToRuntimeMessage } from "../src/starlingMonkeyRuntime";
+
 // Type definitions for SpiderMonkey Debugger API
 declare class Debugger {
   static Object: any;
@@ -136,12 +138,9 @@ try {
     }
   }
 
-  // interface Message {
-  //   type: string;
-  //   value?: any;
-  // }
-
-  type Message = LoadProgramMessage
+  // Messages this script RECEIVES
+  type RuntimeToInstanceMessage =
+    | LoadProgramMessage
     | ContinueMessage
     | GetStackMessage
     | GetScopesMessage
@@ -657,13 +656,13 @@ try {
 
   // TODO: message types?  Although this is some special protocol
   // But the set of messages looks a *LOT* like the CR->SMR messages (IRuntimeMessage).
-  function sendMessage(type: string, value?: any) {
+  function sendMessage(type: InstanceToRuntimeMessage["type"], value?: any) {
     const messageStr = JSON.stringify({ type, value });
     LOG && print(`sending message: ${messageStr}`);
     socket.send(`${messageStr.length}\n${messageStr}`);
   }
 
-  function receiveMessage(): Message {
+  function receiveMessage(): RuntimeToInstanceMessage {
     LOG && print("Debugger listening for incoming message ...");
     let partialMessage = "";
     let eol = -1;
