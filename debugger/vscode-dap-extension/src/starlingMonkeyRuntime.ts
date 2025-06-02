@@ -40,6 +40,7 @@ type RuntimeEventMap = {
   output: [type: OutputType, text: string, filePath: string, line: number, column: number],
   stopOnEntry: [],
   stopOnBreakpoint: [],
+  // TODO: are these used? Does SM support them?
   stopOnDataBreakpoint: [],
   stopOnInstructionBreakpoint: [],
   stopOnException: [exception: any | undefined],
@@ -124,13 +125,15 @@ interface StopDebugLoggingMessage {
   value?: undefined;
 }
 
+// TODO: do we need a 'paused' state, for when we are at a breakpoint?
+// Running seems to adequately cover it but I am not sure if there are
+// actions/messagest that should only be available when paused (e.g.
+// get stack, get-set variables).
 type RuntimeState =
   | Initialising
   | Connecting
   | LoadingScript
-  // | Ready
   | Running;
-  // | PendingRequest;
 
 interface Initialising {
   state: 'init';
@@ -141,17 +144,9 @@ interface Connecting {
 interface LoadingScript {
   state: 'loadingScript';
 }
-// interface Ready {
-//   state: 'ready';  // TODO: is this actually the 'paused' state?
-// }
 interface Running {
   state: 'running';
 }
-// interface PendingRequest {
-//   state: 'waiting';
-//   requestType: 'stack' | 'scopes' | 'breakpointsForLine' | 'variables' | 'setBreakpoints' | 'setVariables';
-//   requestId: string;
-// }
 
 // Messages from the ComponentRuntimeInstance to the SMRuntime,
 // received as JSON via SMRuntime._server socket.
@@ -160,12 +155,12 @@ export type InstanceToRuntimeMessage =
   | IProgramLoadedMessage
   | IBreakpointHitMessage
   | IStopOnStepMessage
-  | IGetStackMessage
-  | IScopesMessage
-  | IBreakpointsForLineMessage
-  | IBreakpointSetMessage
-  | IVariablesMessage
-  | IVariableSetMessage;
+  | StackResponse
+  | ScopesResponse
+  | BreakpointsForLineResponse
+  | BreakpointSetResponse
+  | VariablesResponse
+  | VariableSetResponse;
 
 interface IConnectMessage {
   type: 'connect';
@@ -179,30 +174,30 @@ interface IBreakpointHitMessage {
 interface IStopOnStepMessage {
   type: 'stopOnStep';
 }
-interface IGetStackMessage {
+interface StackResponse {
   type: 'stack';
   value: ReadonlyArray<IRuntimeStackFrame>;
 }
-interface IScopesMessage {
+interface ScopesResponse {
   type: 'scopes';
   value: ReadonlyArray<Scope>,
 }
-interface IBreakpointsForLineMessage {
+interface BreakpointsForLineResponse {
   type: 'breakpointsForLine';
   value: ReadonlyArray<{
     line: number;
     column: number,
   }>
 }
-interface IBreakpointSetMessage {
+interface BreakpointSetResponse {
   type: 'breakpointSet';
   value: IRuntimeBreakpoint;
 }
-interface IVariablesMessage {
+interface VariablesResponse {
   type: 'variables',
   value: ReadonlyArray<IRuntimeVariable>,
 }
-interface IVariableSetMessage {
+interface VariableSetResponse {
   type: 'variableSet',
   value: IRuntimeVariable,
 }
@@ -417,30 +412,12 @@ export class StarlingMonkeyRuntime extends EventEmitter<RuntimeEventMap> {
     this._stopOnEntry = stopOnEntry;
     this._sourceFile = this.normalizePath(program);
 
-    // Start the async message processor
     this.runDebugLoop();
-
-    // let message = await this._messageReceived.wait();
-    // assert(
-    //   message.type === "connect",
-    //   `expected "connect" message, got "${message.type}"`
-    // );
-    // // this.sendMessage("startDebugLogging");
-    // message = await this.sendAndReceiveMessage({ type: "loadProgram", value: this._sourceFile });
-    // assert(
-    //   message.type === "programLoaded",
-    //   `expected "programLoaded" message, got "${message.type}"`
-    // );
-    // this.emit("programLoaded");
   }
 
   async runDebugLoop() {
-    // AARGH IT CAN'T BE A STATE MACHINE BECAUSE SOME OF THE DEBUG PROTOCOL
-    // STUFF WANTS RESPONSES AARGH (e.g. setBreakPointsRequest - it's async, but
-    // it expects the BP info to be returned via the `response` param)
-
-    // Okay we have a slightly odd mix here of state machine stuff and
-    // R/R stuff.  Feels like there should be a better way.
+    // We have a slightly odd mix here of state machine stuff (unsolicited messages)
+    // and request-response stuff.  Feels like there should be a better way.
 
     while (true) {
       let message = await this._messageReceived.wait();
@@ -492,7 +469,7 @@ export class StarlingMonkeyRuntime extends EventEmitter<RuntimeEventMap> {
           switch (message.type) {
             case 'programLoaded':
               console.debug(`loaded debugger script into SM host (received '${message.type}' message)`);
-              this._state = { state: 'running' };  // TODO: should there be a paused state
+              this._state = { state: 'running' };
               this.emit('programLoaded');
               break;
             default:
@@ -500,21 +477,12 @@ export class StarlingMonkeyRuntime extends EventEmitter<RuntimeEventMap> {
               break;
           }
           break;
-        // case 'ready':
-        //   switch (message.type) {
-        //     default:
-        //       console.warn(`unexpected message '${message.type}' during ${this._state.state} - ignored`);
-        //       break;
-        //   }
-        //   break;
         case 'running':
           switch (message.type) {
             case 'breakpointHit':
-              // this._state = { state: 'ready' };
               this.emit('stopOnBreakpoint');
               break;
             case 'stopOnStep':
-              // this._state = { state: 'ready' };
               this.emit('stopOnStep');
               break;
             default:
@@ -522,13 +490,6 @@ export class StarlingMonkeyRuntime extends EventEmitter<RuntimeEventMap> {
               break;
           }
           break;
-        // case 'waiting':
-        //   switch (message.type) {
-        //     default:
-        //       console.warn(`unexpected message '${message.type}' during ${this._state.state} - ignored`);
-        //       break;
-        //   }
-        //   break;
       }
     }
   }
@@ -566,7 +527,6 @@ export class StarlingMonkeyRuntime extends EventEmitter<RuntimeEventMap> {
 
     const handleData = async (data: string) => {
       if (!debuggerScriptSent) {
-        console.debug(`*** DEBUGGER SCRIPT NOT YET SENT. data=${data}`);
         if (data.toString() !== "get-debugger") {
           console.warn(
             `expected "get-debugger" message, got "${data.toString()}". Ignoring ...`
@@ -637,25 +597,6 @@ export class StarlingMonkeyRuntime extends EventEmitter<RuntimeEventMap> {
     this._socket.write(`${json.length}\n${json}`);
   }
 
-  // TODO: This doesn't work reliably because messages can be
-  // processed concurrently and so you cannot rely on responses
-  // matching up to messages (e.g. getting a BP Hit response after
-  // a Get BPs for Line message).
-  //
-  // Should we use something like correlation IDs? Or a more R/R
-  // protocol such as HTTP?
-  //
-  // ETA: We can't use something R/R because the `socket` object is given
-  // to use by StarlingMonkey and it's basic as.
-  // private sendAndReceiveMessage(
-  //   message: RuntimeToInstanceMessage,
-  //   useRawValue = false
-  // ): Promise<InstanceToRuntimeMessage> {
-  //   console.debug(`--> send: ${message.type}`);
-  //   this.sendMessage(message, useRawValue);
-  //   return this._messageReceived.wait();
-  // }
-
   public async run() {
     if (this._debug && this._stopOnEntry) {
       this.emit("stopOnEntry");
@@ -665,8 +606,7 @@ export class StarlingMonkeyRuntime extends EventEmitter<RuntimeEventMap> {
   }
 
   public async continue() {
-    if (this._state.state === 'running') {  // previously tested 'ready'
-      // this._state = { state: 'running' };
+    if (this._state.state === 'running') {
       this.sendMessage({ type: 'continue' });
     } else {
       console.warn(`unexpected 'continue' call while in state ${this._state.state}`);
@@ -768,12 +708,12 @@ export class StarlingMonkeyRuntime extends EventEmitter<RuntimeEventMap> {
     return message.value;
   }
 
-  private _bpSet: Signal<IBreakpointSetMessage, void> = new Signal();
-  private _variables: Signal<IVariablesMessage, void> = new Signal();
-  private _variableSet: Signal<IVariableSetMessage, void> = new Signal();
-  private _stack: Signal<IGetStackMessage, void> = new Signal();
-  private _scopes: Signal<IScopesMessage, void> = new Signal();
-  private _bpsForLine: Signal<IBreakpointsForLineMessage, void> = new Signal();
+  private _bpSet: Signal<BreakpointSetResponse, void> = new Signal();
+  private _variables: Signal<VariablesResponse, void> = new Signal();
+  private _variableSet: Signal<VariableSetResponse, void> = new Signal();
+  private _stack: Signal<StackResponse, void> = new Signal();
+  private _scopes: Signal<ScopesResponse, void> = new Signal();
+  private _bpsForLine: Signal<BreakpointsForLineResponse, void> = new Signal();
 
   public async setBreakPoint(
     path: string,

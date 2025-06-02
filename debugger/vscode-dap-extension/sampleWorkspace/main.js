@@ -12,12 +12,12 @@ function foo(ev) {
         c: 3
     };
     let re = /a/;
-    bar(ev);
+    bar(ev, obj);
     console.log("hello from foo");
 }
 
-function bar(evt) {
-    let body = 'Hello from content!';
+function bar(evt, o) {
+    let body = `Hello from content! ${o.b}`;
     let resp = new Response(body);
     evt.respondWith(resp);
 }
