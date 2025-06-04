@@ -3,6 +3,8 @@ import { EventEmitter } from "events";
 import * as Net from "net";
 import { Signal } from "./signals.js";
 import { Terminal, TerminalShellExecution, window } from "vscode";
+import { SourceLocation, SourceMaps } from "./sourcemaps/sourceMaps.js";
+import { dirname } from "path";
 
 export interface FileAccessor {
   isWindows: boolean;
@@ -19,9 +21,10 @@ export interface IRuntimeBreakpoint {
 interface IRuntimeStackFrame {
   index: number;
   name: string;
-  file?: string;
-  line?: number;
-  column?: number;
+  sourceLocation?: SourceLocation;
+  // path?: string;
+  // line?: number;
+  // column?: number;
   instruction?: number;
 }
 
@@ -175,6 +178,7 @@ interface IConnectMessage {
 }
 interface IProgramLoadedMessage {
   type: 'programLoaded';
+  value: string; // path to loaded program
 }
 interface IBreakpointHitMessage {
   type: 'breakpointHit';
@@ -205,7 +209,6 @@ interface BreakpointSetResponse {
 interface VariablesResponse {
   type: 'variables',
   value: ReadonlyArray<IRuntimeVariable>,
-  diagnostics: string;
 }
 interface VariableSetResponse {
   type: 'variableSet',
@@ -394,6 +397,7 @@ class ComponentRuntimeInstance {
 export class StarlingMonkeyRuntime extends EventEmitter<RuntimeEventMap> {
   private _debug!: boolean;
   private _stopOnEntry!: boolean;
+  private _sourceMaps!: SourceMaps;
   public get fileAccessor(): FileAccessor {
     return this._fileAccessor;
   }
@@ -446,7 +450,6 @@ export class StarlingMonkeyRuntime extends EventEmitter<RuntimeEventMap> {
         continue;
       }
       if (message.type === 'variables') {
-        console.warn(`*** we have some variables! ${message.value.map(v => v.name)}`);
         this._variables.resolve(message);
         continue;
       }
@@ -491,6 +494,7 @@ export class StarlingMonkeyRuntime extends EventEmitter<RuntimeEventMap> {
           switch (message.type) {
             case 'programLoaded':
               console.debug(`loaded debugger script into SM host (received '${message.type}' message)`);
+              this.initSourceMaps(message.value);
               this._state = { state: 'running' };
               this.emit('programLoaded');
               break;
@@ -562,9 +566,6 @@ export class StarlingMonkeyRuntime extends EventEmitter<RuntimeEventMap> {
         return;
       }
 
-      // console.debug(`*** SUBSEQUENT FROM WHEREVER. data=${data}`);
-      console.debug(`<-- received: ${data}`);
-
       partialMessage += data;
 
       if (!lengthReceived) {
@@ -586,10 +587,9 @@ export class StarlingMonkeyRuntime extends EventEmitter<RuntimeEventMap> {
         return;
       }
       let message = partialMessage.slice(0, expectedLength);
-      console.debug(`  <-- parsed: ${message}`);
+      console.debug(`<-- received: ${message}`);
       try {
         let parsed = JSON.parse(message);
-        // console.debug(`received message ${partialMessage}`);
         resetMessageState();
         this._messageReceived.resolve(parsed);
       } catch (e) {
@@ -615,8 +615,12 @@ export class StarlingMonkeyRuntime extends EventEmitter<RuntimeEventMap> {
     } else {
       json = JSON.stringify(message);
     }
-    // console.debug(`sending message to runtime: ${message}`);
     this._socket.write(`${json.length}\n${json}`);
+  }
+
+  initSourceMaps(path: string) {
+    path = this.qualifyPath(path);
+    this._sourceMaps = new SourceMaps(dirname(path), this._workspaceDir);
   }
 
   public async run() {
@@ -633,15 +637,6 @@ export class StarlingMonkeyRuntime extends EventEmitter<RuntimeEventMap> {
     } else {
       console.warn(`unexpected 'continue' call while in state ${this._state.state}`);
     }
-
-    // this.sendMessage({ type: 'continue' });
-    // let message = await this.sendAndReceiveMessage({ type: "continue" });
-    // // TODO: handle other results, such as run to completion
-    // assert(
-    //   message.type === "breakpointHit",
-    //   `expected "breakpointHit" message, got "${message.type}"`
-    // );
-    // this.emit("stopOnBreakpoint");
   }
 
   public next(_granularity: "statement" | "line" | "instruction") {
@@ -658,14 +653,6 @@ export class StarlingMonkeyRuntime extends EventEmitter<RuntimeEventMap> {
 
   private handleStep(type: "next" | "stepIn" | "stepOut") {
     this.sendMessage({ type });
-    // let message = await this.sendAndReceiveMessage({ type });
-    // // TODO: handle other results, such as run to completion
-    // // TODO: this can barf if the step lands you on a breakpoint
-    // assert(
-    //   message.type === "stopOnStep",
-    //   `expected "stopOnStep" message, got "${message.type}"`
-    // );
-    // this.emit("stopOnStep");
   }
 
   public async stack(index: number, count: number): Promise<IRuntimeStack> {
@@ -674,21 +661,13 @@ export class StarlingMonkeyRuntime extends EventEmitter<RuntimeEventMap> {
       count,
     }});
 
-    // let message = await this.sendAndReceiveMessage({ type: "getStack", value: {
-    //   index,
-    //   count,
-    // }});
-    // assert(
-    //   message.type === "stack",
-    //   `expected "stack" message, got "${message.type}"`
-    // );
-
     let message = await this._stack.wait();
     
     let stack = message.value;
     for (let frame of stack) {
-      if (frame.file) {
-        frame.file = this.qualifyPath(frame.file);
+      if (frame.sourceLocation) {
+        frame.sourceLocation.path = this.qualifyPath(frame.sourceLocation.path);
+        await this._translateLocationFromContent(frame.sourceLocation);
       }
     }
     return {
@@ -697,14 +676,29 @@ export class StarlingMonkeyRuntime extends EventEmitter<RuntimeEventMap> {
     };
   }
 
+  private async _translateLocationFromContent(loc: SourceLocation) {
+    if (typeof loc.column === "number" && loc.column > 0) {
+      loc.column -= 1;
+    }
+    if (!this._sourceMaps) {
+      return true;
+    }
+    return await this._sourceMaps.MapToSource(loc);
+  }
+
+  private async _translateLocationToContent(loc: SourceLocation) {
+    if (typeof loc.column === "number") {
+      loc.column += 1;
+    }
+    if (!this._sourceMaps) {
+      return true;
+    }
+    return await this._sourceMaps.MapFromSource(loc);
+  }
+
   async getScopes(frameId: number): Promise<ReadonlyArray<Scope>> {
-    // let message = await this.sendAndReceiveMessage({ type: "getScopes", value: frameId });
     this.sendMessage({ type: "getScopes", value: frameId });
     let message = await this._scopes.wait();
-    // assert(
-    //   message.type === "scopes",
-    //   `expected "scopes" message, got "${message.type}"`
-    // );
     return message.value;
   }
 
@@ -714,21 +708,13 @@ export class StarlingMonkeyRuntime extends EventEmitter<RuntimeEventMap> {
   ): Promise<ReadonlyArray<{ line: number; column: number }>> {
     // TODO: support the full set of query params from BreakpointLocationsArguments
     path = this.normalizePath(path);
-    // let message = await this.sendAndReceiveMessage({ type: "getBreakpointsForLine", value: {
-    //   path,
-    //   line,
-    // }});
-    await this.sendMessage({ type: "getBreakpointsForLine", value: {
-      path,
-      line,
-    }});
+
+    let loc = new SourceLocation(path, line, 0);
+    await this._translateLocationToContent(loc);
+    
+    await this.sendMessage({ type: "getBreakpointsForLine", value: loc });
 
     let message = await this._bpsForLine.wait();
-    // assert(
-    //   message.type === "breakpointsForLine",
-    //   `expected "breakpointsForLine" message, got "${message.type}"`
-    // );
-    console.debug(`returning BPs, message.value=${message.value}`);
     return message.value;
   }
 
@@ -747,11 +733,10 @@ export class StarlingMonkeyRuntime extends EventEmitter<RuntimeEventMap> {
   ): Promise<IRuntimeBreakpoint> {
     path = this.normalizePath(path);
 
-    this.sendMessage({ type: "setBreakpoint", value: {
-      path,
-      line,
-      column,
-    }});
+    let loc = new SourceLocation(path, line, column ?? 0);
+    await this._translateLocationToContent(loc);
+
+    this.sendMessage({ type: "setBreakpoint", value: loc });
 
     // let response = await this.sendAndReceiveMessage({ type: "setBreakpoint", value: {
     //   path,
@@ -761,19 +746,19 @@ export class StarlingMonkeyRuntime extends EventEmitter<RuntimeEventMap> {
 
     let response = await this._bpSet.wait();
 
+    if (response.value.id !== -1) {
+      loc.line = response.value.line;
+      loc.column = response.value.column;
+    }
+    await this._translateLocationFromContent(loc);
+
+    return { id: response.value.id, ...loc };
     return response.value;
   }
 
   public async getVariables(reference: number): Promise<ReadonlyArray<IRuntimeVariable>> {
-    console.warn(`*** asking for variable #${reference}`);
     this.sendMessage({ type: "getVariables", value: reference });
-    // let message = await this.sendAndReceiveMessage({ type: "getVariables", value: reference });
     let message = await this._variables.wait();
-    console.warn(`*** ...and got response for variable #${reference}: DIAG=${message.diagnostics}`);
-    // assert(
-    //   message.type === "variables",
-    //   `expected "variables" message, got "${message.type}"`
-    // );
     return message.value;
   }
 
@@ -785,21 +770,12 @@ export class StarlingMonkeyRuntime extends EventEmitter<RuntimeEventMap> {
     // Manually encode the value so that it'll be decoded as raw values by the runtime, instead of everything becoming a string.
     // TODO: this seems extraordinarily illegal. What if value contains a double quote, etc. Or is it guaranteed not to by the debug protocol?
     let rawValue = `{"variablesReference": ${variablesReference}, "name": "${name}", "value": ${value}}`;
-    // let message = await this.sendAndReceiveMessage(
-    //   { type: "setVariable", value: rawValue },
-    //   true
-    // );
     this.sendMessage(
       { type: "setVariable", value: rawValue },
       true
     );
 
     let message = await this._variableSet.wait();
-
-    // assert(
-    //   message.type === "variableSet",
-    //   `expected "variableSet" message, got "${message.type}"`
-    // );
     return message.value;
   }
 

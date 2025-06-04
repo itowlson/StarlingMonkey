@@ -44,6 +44,10 @@
     "vscode:prepublish": "rimraf dist && npm run -S esbuild-all",
     "test": "npm run typecheck"
   },
+  "dependencies": {
+    "request-light": "^0.8.0",
+    "source-map": "^0.7.4"
+  },
   "devDependencies": {
     "@types/glob": "8.1.0",
     "@types/mocha": "10.0.10",
