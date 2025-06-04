@@ -26,6 +26,8 @@ declare namespace Debugger {
     setBreakpoint(offset: number, handler: BreakpointHandler): void;
   }
 
+  type CompletionValue = { "return": any, "yield"?: boolean } | { "throw": any; stack: any; } | null;
+
   interface Frame {
     script: Script;
     offset: number;
@@ -37,6 +39,8 @@ declare namespace Debugger {
     environment: Environment;
     onStep: (() => void) | undefined;
     onPop: (() => void) | undefined;
+    eval(code: string, options?: { url?: string; lineNumber?: number; }): CompletionValue;
+    evalWithBindings(code: string, bindings: { [key: string]: any }, options?: { url?: string; lineNumber?: number; }): CompletionValue;
   }
 
   interface Environment {
@@ -71,6 +75,13 @@ declare const socket: {
 declare function print(message: string): void;
 declare function assert(condition: any, message?: string): asserts condition;
 declare function setContentPath(path: string): void;
+
+function isReturn(cv: Debugger.CompletionValue): cv is { "return": any } {
+  // The yield case is potentially tricky but for now I'm going to
+  // not worry about it (it should eval as an iterator etc. so I don't
+  // think it's wrong).
+  return cv !== null && Object.hasOwn(cv, "return");
+}
 
 let LOG = false;
 
@@ -111,7 +122,7 @@ try {
     for (let script of dbg.findScripts()) {
       addScript(script);
     }
-    sendMessage("programLoaded");
+    sendMessage({ type: "programLoaded" });
     return handlePausedFrame(frame);
   };
 
@@ -148,6 +159,7 @@ try {
     | SetBreakpointMessage
     | GetVariablesMessage
     | SetVariableMessage
+    | EvaluateMessage
     // EXTRA
     | StartDebugLoggingMessage
     | StopDebugLoggingMessage;
@@ -210,6 +222,13 @@ try {
     } // in SMR this a string of manually encoded JSON text because reasons I guess
   }
 
+  interface EvaluateMessage {
+    type: 'evaluate';
+    value: {
+      expression: string;
+    }
+  }
+
   // END COPY / MODIFIED
 
   // These seem to be commented out in SMR
@@ -248,6 +267,9 @@ try {
             break;
           case "setVariable":
             setVariable(message.value);
+            break;
+          case 'evaluate':
+            evaluate(message.value.expression);
             break;
           case "next":
             currentFrame!.onStep = handleNext;
@@ -305,13 +327,13 @@ try {
     if (!positionChanged(this)) {
       return;
     }
-    sendMessage("stopOnStep");
+    sendMessage({ type: "stopOnStep" });
     handlePausedFrame(this);
   }
 
   function handleStepIn(frame: Debugger.Frame): void {
     dbg.onEnterFrame = undefined;
-    sendMessage("stopOnStep");
+    sendMessage({ type: "stopOnStep" });
     handlePausedFrame(frame);
   }
 
@@ -326,7 +348,7 @@ try {
 
   const breakpointHandler: Debugger.BreakpointHandler = {
     hit(frame: Debugger.Frame): void {
-      sendMessage("breakpointHit", frame.offset);
+      sendMessage({ type: "breakpointHit", value: frame.offset });
       return handlePausedFrame(frame);
     },
   };
@@ -390,7 +412,7 @@ try {
         };
       });
     }
-    sendMessage("breakpointsForLine", locations);
+    sendMessage({ type: "breakpointsForLine", value: locations });
   }
 
   function setBreakpoint({
@@ -405,7 +427,7 @@ try {
     let fileScripts = scripts.get(path);
     if (!fileScripts) {
       LOG && print(`Can't set breakpoint: no scripts found for file ${path}`);
-      sendMessage("breakpointSet", { id: -1, line, column });
+      sendMessage({ type: "breakpointSet", value: { id: -1, line, column } });
       return;
     }
     let { script, offsets } =
@@ -424,12 +446,12 @@ try {
       }
       script!.setBreakpoint(offset, breakpointHandler);
     }
-    sendMessage("breakpointSet", { id: offset, line, column });
+    sendMessage({ type: "breakpointSet", value: { id: offset, line, column } });
   }
 
   interface IRuntimeStackFrame {
     index: number;
-    name?: string;
+    name: string;
     file?: string;
     line?: number;
     column?: number;
@@ -441,8 +463,13 @@ try {
     let frame = findFrame(currentFrame, index);
 
     while (stack.length < count) {
+      const name = frame.callee ?
+        frame.callee.name :
+        frame.type;
+
       let entry: IRuntimeStackFrame = {
         index: stack.length,
+        name,
       };
       if (frame.script) {
         const offsetMeta = frame.script.getOffsetMetadata(frame.offset);
@@ -451,11 +478,6 @@ try {
         entry.column = offsetMeta.columnNumber;
       }
 
-      if (frame.callee) {
-        entry.name = frame.callee.name;
-      } else {
-        entry.name = frame.type;
-      }
       stack.push(entry);
       let nextFrame = frame.older || frame.olderSavedFrame;
       if (!nextFrame) {
@@ -463,7 +485,7 @@ try {
       }
       frame = nextFrame;
     }
-    sendMessage("stack", stack);
+    sendMessage({ type: "stack", value: stack });
   }
 
   interface Scope {
@@ -500,7 +522,7 @@ try {
       expensive: true,
     }];
 
-    sendMessage("scopes", scopes);
+    sendMessage({ type: "scopes", value: scopes });
   }
 
   interface IVariable {
@@ -514,16 +536,21 @@ try {
     if (reference > MAX_FRAMES) {
       let object = idToObject.get(reference);
       let locals = getMembers(object!);
-      sendMessage("variables", locals);
+      sendMessage({ type: "variables", value: locals, diagnostics: "from getMembers" });
       return;
     }
+
+    let diagnostics = ["from frame env"];
 
     assert(currentFrame);
     let frame = findFrame(currentFrame, reference - 1);
     let locals: IVariable[] = [];
 
     for (let name of frame.environment.names()) {
+      diagnostics.push(name);
       let value = frame.environment.getVariable(name);
+      diagnostics.push(typeof value);
+      diagnostics.push(`${JSON.stringify(value)}`);
       locals.push({ name, ...formatValue(value) });
     }
 
@@ -537,7 +564,7 @@ try {
       });
     }
 
-    sendMessage("variables", locals);
+    sendMessage({ type: "variables", value: locals, diagnostics: `${diagnostics}` });
   }
 
   function setVariable({
@@ -559,9 +586,10 @@ try {
       assert(currentFrame);
       let frame = findFrame(currentFrame, variablesReference - 1);
       frame.environment.setVariable(name, value);
-      newValue = formatValue(frame.environment.getVariable(name));
+      newValue = { name, ...formatValue(frame.environment.getVariable(name)) };
     }
-    sendMessage("variableSet", newValue);
+
+    sendMessage({ type: "variableSet", value: newValue });
   }
 
   function getMembers(object: Debugger.Object): any[] {
@@ -582,7 +610,9 @@ try {
     value: string;
     type: string;
     variablesReference: number;
+    diagnostics: string;
   } {
+    let diagnostics = [`FV: ${JSON.stringify(value)}`];
     let formatted;
     let type: string = typeof value;
     let structured = false;
@@ -606,13 +636,19 @@ try {
     }
     let variablesReference = 0;
     if (structured) {
-      if (!objectToId.has(value)) {
+      diagnostics.push('FV: structured!');
+      const vr2 = objectToId.get(value);
+      if (!vr2) {
         variablesReference = varRefsIndex++;
         idToObject.set(variablesReference, value);
         objectToId.set(value, variablesReference);
+        diagnostics.push(`FV: not in o21, added at ${variablesReference}`);
+      } else {
+        diagnostics.push(`FV: in o21 at ${vr2}`);
+        variablesReference = vr2;
       }
     }
-    return { value: formatted, type, variablesReference };
+    return { value: formatted, type, variablesReference, diagnostics: `${diagnostics}` };
   }
 
   function formatDescriptor(descriptor: Debugger.PropertyDescriptor): {
@@ -641,6 +677,47 @@ try {
     return { value: formatted, type: "Accessor", variablesReference: 0 };
   }
 
+  function evaluate(expression: string) {
+    assert(currentFrame);
+    const frame = findFrame(currentFrame, 0);
+
+    // Frame.eval results in debuggee values that don't appear in
+    // objectToId so we can't get their references (so they don't
+    // expand correctly). Therefore, we get the debugger shadow
+    // variables and do the eval on them, using references to handle
+    // the translation to actual values.
+    //
+    // I'm not sure what I fully understand this, but this worked for me
+    // and the obvious way didn't so :shrug:
+    const names = frame.environment.names();
+    let context: any = {};
+    for (const name of names) {
+      context[name] = frame.environment.getVariable(name);
+    }
+
+    let result;
+    let variablesReference = 0;
+    try {
+      const completion = frame.evalWithBindings(expression, context);
+      if (isReturn(completion)) {
+        result = completion.return;
+        variablesReference = objectToId.get(result) || 0;
+      } else if (completion === null) {
+        // null completion = terminated (rather than meaning the expr evaled to null)
+        result = `evaluation terminated`;
+      } else {
+        result = `evaluation threw exception: ${completion.throw}`;
+      }
+    } catch(e) {
+      result = `evaluation error: ${e}`;
+    }
+
+    sendMessage({ type: 'evaluate', value: {
+      result: `${result}`,
+      variablesReference,
+    }});
+  }
+
   function findFrame(
     start: Debugger.Frame,
     index: number
@@ -656,8 +733,8 @@ try {
 
   // TODO: message types?  Although this is some special protocol
   // But the set of messages looks a *LOT* like the CR->SMR messages (IRuntimeMessage).
-  function sendMessage(type: InstanceToRuntimeMessage["type"], value?: any) {
-    const messageStr = JSON.stringify({ type, value });
+  function sendMessage(message: InstanceToRuntimeMessage) {
+    const messageStr = JSON.stringify(message);
     LOG && print(`sending message: ${messageStr}`);
     socket.send(`${messageStr.length}\n${messageStr}`);
   }
@@ -705,7 +782,7 @@ try {
     }
   }
 
-  sendMessage("connect");
+  sendMessage({ type: "connect" });
   waitForSocket();
 } catch (e) {
   assert(e instanceof Error);

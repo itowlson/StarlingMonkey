@@ -19,8 +19,8 @@ export interface IRuntimeBreakpoint {
 interface IRuntimeStackFrame {
   index: number;
   name: string;
-  file: string;
-  line: number;
+  file?: string;
+  line?: number;
   column?: number;
   instruction?: number;
 }
@@ -63,6 +63,7 @@ type RuntimeToInstanceMessage =
   | SetBreakpointMessage
   | GetVariablesMessage
   | SetVariableMessage
+  | EvaluateMessage
   | StartDebugLoggingMessage
   | StopDebugLoggingMessage;
 
@@ -115,6 +116,12 @@ interface SetVariableMessage {
   type: 'setVariable';
   value: string; // manually encoded JSON text
 }
+interface EvaluateMessage {
+  type: 'evaluate';
+  value: {
+    expression: string;
+  }
+}
 interface StartDebugLoggingMessage {
   type: 'startDebugLogging';
   value?: undefined;
@@ -160,7 +167,8 @@ export type InstanceToRuntimeMessage =
   | BreakpointsForLineResponse
   | BreakpointSetResponse
   | VariablesResponse
-  | VariableSetResponse;
+  | VariableSetResponse
+  | EvaluateResponse;
 
 interface IConnectMessage {
   type: 'connect';
@@ -170,6 +178,7 @@ interface IProgramLoadedMessage {
 }
 interface IBreakpointHitMessage {
   type: 'breakpointHit';
+  value: number; // offset into frame
 }
 interface IStopOnStepMessage {
   type: 'stopOnStep';
@@ -196,10 +205,18 @@ interface BreakpointSetResponse {
 interface VariablesResponse {
   type: 'variables',
   value: ReadonlyArray<IRuntimeVariable>,
+  diagnostics: string;
 }
 interface VariableSetResponse {
   type: 'variableSet',
   value: IRuntimeVariable,
+}
+interface EvaluateResponse {
+  type: 'evaluate';
+  value: {
+    result: string;
+    variablesReference: number;
+  }
 }
 
 function assert(condition: any, msg?: string): asserts condition {
@@ -429,11 +446,16 @@ export class StarlingMonkeyRuntime extends EventEmitter<RuntimeEventMap> {
         continue;
       }
       if (message.type === 'variables') {
+        console.warn(`*** we have some variables! ${message.value.map(v => v.name)}`);
         this._variables.resolve(message);
         continue;
       }
       if (message.type === 'variableSet') {
         this._variableSet.resolve(message);
+        continue;
+      }
+      if (message.type === 'evaluate') {
+        this._eval.resolve(message);
         continue;
       }
       if (message.type === 'stack') {
@@ -665,7 +687,9 @@ export class StarlingMonkeyRuntime extends EventEmitter<RuntimeEventMap> {
     
     let stack = message.value;
     for (let frame of stack) {
-      frame.file = this.qualifyPath(frame.file);
+      if (frame.file) {
+        frame.file = this.qualifyPath(frame.file);
+      }
     }
     return {
       count: stack.length,
@@ -710,6 +734,7 @@ export class StarlingMonkeyRuntime extends EventEmitter<RuntimeEventMap> {
 
   private _bpSet: Signal<BreakpointSetResponse, void> = new Signal();
   private _variables: Signal<VariablesResponse, void> = new Signal();
+  private _eval: Signal<EvaluateResponse, void> = new Signal();
   private _variableSet: Signal<VariableSetResponse, void> = new Signal();
   private _stack: Signal<StackResponse, void> = new Signal();
   private _scopes: Signal<ScopesResponse, void> = new Signal();
@@ -740,9 +765,11 @@ export class StarlingMonkeyRuntime extends EventEmitter<RuntimeEventMap> {
   }
 
   public async getVariables(reference: number): Promise<ReadonlyArray<IRuntimeVariable>> {
+    console.warn(`*** asking for variable #${reference}`);
     this.sendMessage({ type: "getVariables", value: reference });
     // let message = await this.sendAndReceiveMessage({ type: "getVariables", value: reference });
     let message = await this._variables.wait();
+    console.warn(`*** ...and got response for variable #${reference}: DIAG=${message.diagnostics}`);
     // assert(
     //   message.type === "variables",
     //   `expected "variables" message, got "${message.type}"`
@@ -773,6 +800,15 @@ export class StarlingMonkeyRuntime extends EventEmitter<RuntimeEventMap> {
     //   message.type === "variableSet",
     //   `expected "variableSet" message, got "${message.type}"`
     // );
+    return message.value;
+  }
+
+  public async evaluate(expression: string): Promise<{
+    result: string;
+    variablesReference: number;
+  }> {
+    this.sendMessage({ type: 'evaluate', value: { expression } });
+    let message = await this._eval.wait();
     return message.value;
   }
 

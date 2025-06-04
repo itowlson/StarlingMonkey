@@ -269,8 +269,10 @@ export class StarlingMonkeyDebugSession extends LoggingDebugSession {
             f.index,
             f.name,
             this.createSource(f.file),
-            this.convertDebuggerLineToClient(f.line)
           );
+          if (f.line) {
+            sf.line = this.convertDebuggerLineToClient(f.line)
+          }
           if (f.column) {
             sf.column = this.convertDebuggerColumnToClient(f.column);
           }
@@ -301,8 +303,11 @@ export class StarlingMonkeyDebugSession extends LoggingDebugSession {
     args: DebugProtocol.VariablesArguments,
     _request?: DebugProtocol.Request
   ): Promise<void> {
+    console.warn(`** dbg: session wants vars #${args.variablesReference} in fmt ${args.format} (filter: ${args.filter})`);
     let variables = await this._runtime.getVariables(args.variablesReference);
     response.body = { variables: variables.slice() };
+    let vv = variables.map(v => `${v.value}|${v.type}`);
+    console.warn(`** dbg: session retting ${vv}`);
     this.sendResponse(response);
   }
 
@@ -317,6 +322,21 @@ export class StarlingMonkeyDebugSession extends LoggingDebugSession {
       args.value
     );
     response.body = { value: message.value, type: message.type, variablesReference: message.variablesReference };
+    this.sendResponse(response);
+  }
+
+  protected async evaluateRequest(
+    response: DebugProtocol.EvaluateResponse,
+    args: DebugProtocol.EvaluateArguments,
+    _request?: DebugProtocol.Request
+  ): Promise<void> {
+    console.warn(`*** EVAL EVAL EVAL!  ${args.expression}`);
+    let result = await this._runtime.evaluate(args.expression);
+    // response.body = {
+    //   result: 'spork spork spork',
+    //   variablesReference: 4098,
+    // };
+    response.body = result;
     this.sendResponse(response);
   }
 
@@ -352,7 +372,11 @@ export class StarlingMonkeyDebugSession extends LoggingDebugSession {
     this.sendResponse(response);
   }
 
-  private createSource(filePath: string): Source {
+  private createSource(filePath: string | undefined): Source | undefined {
+    if (!filePath) {
+      return undefined;
+    }
+
     return new Source(
       basename(filePath),
       this.convertDebuggerPathToClient(filePath),
