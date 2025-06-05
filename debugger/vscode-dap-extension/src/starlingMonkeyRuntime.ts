@@ -1,6 +1,7 @@
 import { Scope } from "@vscode/debugadapter";
 import { EventEmitter } from "events";
 import * as Net from "net";
+import * as Path from "path";
 import { Signal } from "./signals.js";
 import { Terminal, TerminalShellExecution, window } from "vscode";
 import { SourceLocation, SourceMaps } from "./sourcemaps/sourceMaps.js";
@@ -486,13 +487,19 @@ export class StarlingMonkeyRuntime extends EventEmitter<RuntimeEventMap> {
       count,
     }});
 
-    let message = await this._stack.wait();
+    const message = await this._stack.wait();
     
-    let stack = message.value;
+    const stack = message.value;
     for (let frame of stack) {
       if (frame.sourceLocation) {
-        frame.sourceLocation.path = this.qualifyPath(frame.sourceLocation.path);
-        await this._translateLocationFromContent(frame.sourceLocation);
+        // Because JS is all by-reference, location objects can end up being
+        // shared across frames or calls. We don't want qualification or translation
+        // to be applied twice to the same location, so we always spin off a
+        // new object instance to perform the translation on.
+        let sourceLocation = { ...frame.sourceLocation };
+        sourceLocation.path = this.qualifyPath(frame.sourceLocation.path);
+        await this._translateLocationFromContent(sourceLocation);
+        frame.sourceLocation = sourceLocation;
       }
     }
     return {
@@ -502,23 +509,33 @@ export class StarlingMonkeyRuntime extends EventEmitter<RuntimeEventMap> {
   }
 
   private async _translateLocationFromContent(loc: SourceLocation) {
+    if (!this._sourceMaps) {
+      return true;
+    }
+    let origColumn = loc.column;
     if (typeof loc.column === "number" && loc.column > 0) {
       loc.column -= 1;
     }
-    if (!this._sourceMaps) {
-      return true;
+    let didMap = await this._sourceMaps.MapToSource(loc);
+    if (!didMap) {
+      loc.column = origColumn;  // revert the change we made for sourcemap processing
     }
-    return await this._sourceMaps.MapToSource(loc);
+    return didMap;
   }
 
   private async _translateLocationToContent(loc: SourceLocation) {
-    if (typeof loc.column === "number") {
-      loc.column += 1;
-    }
     if (!this._sourceMaps) {
       return true;
     }
-    return await this._sourceMaps.MapFromSource(loc);
+    let origColumn = loc.column;
+    if (typeof loc.column === "number") {
+      loc.column += 1;
+    }
+    let didMap = await this._sourceMaps.MapFromSource(loc);
+    if (!didMap) {
+      loc.column = origColumn;  // revert the change we made for sourcemap processing
+    }
+    return didMap;
   }
 
   async getScopes(frameId: number): Promise<ReadonlyArray<Scope>> {
@@ -626,6 +643,9 @@ export class StarlingMonkeyRuntime extends EventEmitter<RuntimeEventMap> {
   }
 
   private qualifyPath(path: string) {
+    if (Path.isAbsolute(path)) {
+      return path;
+    }
     return `${this._workspaceDir}/${path}`;
   }
 }

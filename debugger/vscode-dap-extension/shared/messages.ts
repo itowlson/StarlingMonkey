@@ -10,6 +10,10 @@ export interface IRuntimeBreakpoint {
 export interface IRuntimeStackFrame {
   index: number;
   name: string;
+  // Passing the path-line-column info as an object instead of as three
+  // fields can cause surprises with sharing (see the `stack` method). We
+  // do it anyway because the three fields are included or omitted together,
+  // and TS has no way of expressing that other than making them an object.
   sourceLocation?: SourceLocation;
   instruction?: number;
 }
