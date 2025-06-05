@@ -259,7 +259,7 @@ export class StarlingMonkeyDebugSession extends LoggingDebugSession {
     response: DebugProtocol.StackTraceResponse,
     args: DebugProtocol.StackTraceArguments
   ): void {
-    const startFrame = args.startFrame || 0;
+    const startFrame = args.startFrame ?? 0;
     const maxLevels = args.levels || 1000;
 
     this._runtime.stack(startFrame, maxLevels).then((stk) => {

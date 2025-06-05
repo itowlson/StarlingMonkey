@@ -1,5 +1,5 @@
 import type { SourceLocation } from "../src/sourcemaps/sourceMaps";
-import type { InstanceToRuntimeMessage } from "../src/starlingMonkeyRuntime";
+import type { InstanceToRuntimeMessage, RuntimeToInstanceMessage } from "../shared/messages";
 
 // Type definitions for SpiderMonkey Debugger API
 declare class Debugger {
@@ -149,98 +149,6 @@ try {
           `Exception during paused frame handling: ${e}. Stack:\n${e.stack}`
         );
     }
-  }
-
-  // Messages this script RECEIVES
-  type RuntimeToInstanceMessage =
-    | LoadProgramMessage
-    | ContinueMessage
-    | GetStackMessage
-    | GetScopesMessage
-    | GetBreakpointsForLineMessage
-    | SetBreakpointMessage
-    | GetVariablesMessage
-    | SetVariableMessage
-    | EvaluateMessage
-    // EXTRA
-    | StartDebugLoggingMessage
-    | StopDebugLoggingMessage;
-
-  // COPIED FROM StarlingMonkeyRuntime.ts
-
-  interface LoadProgramMessage {
-    type: 'loadProgram';
-    value: string; // source file
-  }
-
-  interface ContinueMessage {
-    type: 'continue' | 'next' | 'stepIn' | 'stepOut';
-    value?: undefined,
-  }
-
-  interface GetStackMessage {
-    type: 'getStack';
-    value: {
-      index: number;
-      count: number;
-    }
-  }
-
-  interface GetScopesMessage {
-    type: 'getScopes';
-    value: number; // frameId
-  }
-
-  interface GetBreakpointsForLineMessage {
-    type: 'getBreakpointsForLine';
-    value: {
-      path: string;
-      line: number;
-    }
-  }
-
-  interface GetVariablesMessage {
-    type: 'getVariables';
-    value: number; // reference
-  }
-
-  // COPIED BUT MODIFIED
-
-  interface SetBreakpointMessage {
-    type: 'setBreakpoint';
-    value: {
-      path: string;
-      line: number;
-      column: number;  // this is optional in SMR
-    }
-  }
-
-  interface SetVariableMessage {
-    type: 'setVariable';
-    value: {
-      variablesReference: number;
-      name: string;
-      value: any;
-    } // in SMR this a string of manually encoded JSON text because reasons I guess
-  }
-
-  interface EvaluateMessage {
-    type: 'evaluate';
-    value: {
-      expression: string;
-    }
-  }
-
-  // END COPY / MODIFIED
-
-  // These seem to be commented out in SMR
-
-  interface StartDebugLoggingMessage {
-    type: 'startDebugLogging';
-  }
-
-  interface StopDebugLoggingMessage {
-    type: 'stopDebugLogging';
   }
 
   function waitForSocket(): void {
@@ -424,7 +332,7 @@ try {
   }: {
     path: string;
     line: number;
-    column: number;
+    column?: number;
   }): void {
     let fileScripts = scripts.get(path);
     if (!fileScripts) {
