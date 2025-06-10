@@ -510,7 +510,7 @@ export class StarlingMonkeyRuntime extends EventEmitter<RuntimeEventMap> {
 
   private async _translateLocationFromContent(loc: SourceLocation) {
     if (!this._sourceMaps) {
-      return true;
+      return false;
     }
     let origColumn = loc.column;
     if (typeof loc.column === "number" && loc.column > 0) {
@@ -525,7 +525,7 @@ export class StarlingMonkeyRuntime extends EventEmitter<RuntimeEventMap> {
 
   private async _translateLocationToContent(loc: SourceLocation) {
     if (!this._sourceMaps) {
-      return true;
+      return false;
     }
     let origColumn = loc.column;
     if (typeof loc.column === "number") {
