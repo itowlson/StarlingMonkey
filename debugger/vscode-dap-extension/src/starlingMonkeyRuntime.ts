@@ -536,11 +536,11 @@ export class StarlingMonkeyRuntime extends EventEmitter<RuntimeEventMap> {
     if (!this._sourceMaps) {
       return false;
     }
-    let origColumn = loc.column;
+    const origColumn = loc.column;
     if (typeof loc.column === "number") {
       loc.column += 1;
     }
-    let didMap = await this._sourceMaps.MapFromSource(loc);
+    const didMap = await this._sourceMaps.MapFromSource(loc);
     if (!didMap) {
       loc.column = origColumn;  // revert the change we made for sourcemap processing
     }
@@ -598,12 +598,35 @@ export class StarlingMonkeyRuntime extends EventEmitter<RuntimeEventMap> {
     let response = await this._bpSet.wait();
 
     if (response.value.id !== -1) {
-      loc.line = response.value.line;
-      loc.column = response.value.column ?? 0;
-    }
-    await this._translateLocationFromContent(loc);
+      // let loc = {
+      //   path: response.value.script,
+      //   line: response.value.line,
+      //   column: response.value.column ?? 0,
+      // };
 
-    return { id: response.value.id, ...loc };
+      // console.warn(`*** SET BP: debugger told us ${response.value.script} L${response.value.line} (path was ${loc.path})`);
+      // const didMap = await this._translateLocationFromContent(loc);
+      // console.warn(`*** SET BP: TRANSLATED bploc ${loc.path} L${loc.line} - DID MAP? ${didMap}`);
+      
+      // return { id: response.value.id, script: loc.path, ...loc };
+      
+      // SERIOUSLY IS THIS WHAT WE ARE MEANT TO DO
+      // BECAUSE THIS IS WHAT SEEMS TO WORK
+      return {
+        id: response.value.id,
+        // script: path,
+        line,
+        column,
+      };
+
+      // loc.line = response.value.line;
+      // loc.column = response.value.column ?? 0;
+    }
+    // console.warn(`*** SET BP: debugger told us ${response.value.script} L${response.value.line}`);
+    // await this._translateLocationFromContent(loc);
+    // console.warn(`*** SET BP: TRANSLATED bploc ${loc.path} L${loc.line}`);
+
+    // return { id: response.value.id, script: loc.path, ...loc };
     return response.value;
   }
 
@@ -619,9 +642,6 @@ export class StarlingMonkeyRuntime extends EventEmitter<RuntimeEventMap> {
     value: string
   ): Promise<IRuntimeVariable> {
     const jsValue: any = JSON.parse(value);
-    // Manually encode the value so that it'll be decoded as raw values by the runtime, instead of everything becoming a string.
-    // TODO: this seems extraordinarily illegal. What if value contains a double quote, etc. Or is it guaranteed not to by the debug protocol?
-    // let rawValue = `{"variablesReference": ${variablesReference}, "name": "${name}", "value": ${value}}`;
     this.sendMessage(
       { type: "setVariable", value: {
         variablesReference,
