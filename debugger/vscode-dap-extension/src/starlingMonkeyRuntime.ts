@@ -498,10 +498,19 @@ export class StarlingMonkeyRuntime extends EventEmitter<RuntimeEventMap> {
         // new object instance to perform the translation on.
         let sourceLocation = { ...frame.sourceLocation };
         sourceLocation.path = this.qualifyPath(frame.sourceLocation.path);
-        await this._translateLocationFromContent(sourceLocation);
+        const premappingSourcePath = sourceLocation.path;
+        const didMap = await this._translateLocationFromContent(sourceLocation);
+        if (didMap && sourceLocation.path !== premappingSourcePath && !Path.isAbsolute(sourceLocation.path)) {
+          // We have been SOURCEMAPPED into a relative path and you can bet your bottom
+          // dollar it's not relative to what we expect it to be.
+          const premappingDir = Path.dirname(premappingSourcePath);
+          const postmappingPath = Path.join(premappingDir, sourceLocation.path);
+          sourceLocation.path = postmappingPath;
+        }
         frame.sourceLocation = sourceLocation;
       }
     }
+
     return {
       count: stack.length,
       frames: stack,
