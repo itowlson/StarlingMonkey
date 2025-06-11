@@ -26,7 +26,7 @@ import { FileAccessor, IStarlingMonkeyRuntimeConfig } from "./starlingMonkeyRunt
 //   context.subscriptions.push(subscription);
 // }
 
-function registerInputCommand(context: ExtensionContext, name: String, options?: InputBoxOptions) {
+function registerInputCommand(context: ExtensionContext, name: string, options?: InputBoxOptions) {
   const fullName = `extension.starlingmonkey-debugger.${name}`;
   const handler = async () => await window.showInputBox(options);
   const subscription = commands.registerCommand(fullName, handler);
@@ -126,7 +126,7 @@ export function activateStarlingMonkeyDebug(
   }
 }
 
-function isDisposable(obj: any): obj is { dispose(): any } {
+function isDisposable(obj: any): obj is { dispose(): any } { // eslint-disable-line @typescript-eslint/no-explicit-any
   return typeof obj["dispose"] === "function";
 }
 
@@ -168,7 +168,7 @@ export const workspaceFileAccessor: FileAccessor = {
     let uri: Uri;
     try {
       uri = pathToUri(path);
-    } catch (e) {
+    } catch {
       return new TextEncoder().encode(`cannot read '${path}'`);
     }
 
@@ -182,7 +182,7 @@ export const workspaceFileAccessor: FileAccessor = {
 function pathToUri(path: string) {
   try {
     return Uri.file(path);
-  } catch (e) {
+  } catch {
     return Uri.parse(path);
   }
 }
@@ -191,7 +191,7 @@ class InlineDebugAdapterFactory implements DebugAdapterDescriptorFactory {
   createDebugAdapterDescriptor(
     session: DebugSession
   ): ProviderResult<DebugAdapterDescriptor> {
-    let config = workspace.getConfiguration("starlingmonkey");
+    const config = workspace.getConfiguration("starlingmonkey");
     return new DebugAdapterInlineImplementation(
       new StarlingMonkeyDebugSession(
         workspaceFileAccessor,

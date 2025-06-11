@@ -86,7 +86,7 @@ interface SetVariableMessage {
   value: {
     variablesReference: number;
     name: string;
-    value: any;
+    value: unknown;
   }
 }
 interface EvaluateMessage {
