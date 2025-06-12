@@ -84,44 +84,8 @@
   },
   "contributes": {
     "menus": {
-      "editor/title/run": [
-        {
-          "command": "extension.starlingmonkey-debugger.runEditorContents",
-          "when": "resourceLangId == javascript",
-          "group": "navigation@1"
-        },
-        {
-          "command": "extension.starlingmonkey-debugger.debugEditorContents",
-          "when": "resourceLangId == javascript",
-          "group": "navigation@2"
-        }
-      ],
-      "commandPalette": [
-        {
-          "command": "extension.starlingmonkey-debugger.debugEditorContents",
-          "when": "resourceLangId == javascript"
-        },
-        {
-          "command": "extension.starlingmonkey-debugger.runEditorContents",
-          "when": "resourceLangId == javascript"
-        }
-      ]
     },
     "commands": [
-      {
-        "command": "extension.starlingmonkey-debugger.debugEditorContents",
-        "title": "Debug File",
-        "category": "StarlingMonkey Debugger",
-        "enablement": "!inDebugMode",
-        "icon": "$(debug-alt)"
-      },
-      {
-        "command": "extension.starlingmonkey-debugger.runEditorContents",
-        "title": "Run File",
-        "category": "StarlingMonkey Debugger",
-        "enablement": "!inDebugMode",
-        "icon": "$(play)"
-      }
     ],
     "breakpoints": [
       {

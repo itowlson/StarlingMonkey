@@ -589,12 +589,6 @@ export class StarlingMonkeyRuntime extends EventEmitter<RuntimeEventMap> {
 
     this.sendMessage({ type: "setBreakpoint", value: loc });
 
-    // let response = await this.sendAndReceiveMessage({ type: "setBreakpoint", value: {
-    //   path,
-    //   line,
-    //   column,
-    // }});
-
     const response = await this._bpSet.wait();
 
     if (response.value.id !== -1) {
@@ -614,9 +608,8 @@ export class StarlingMonkeyRuntime extends EventEmitter<RuntimeEventMap> {
       // BECAUSE THIS IS WHAT SEEMS TO WORK
       return {
         id: response.value.id,
-        // script: path,
         line,
-        column,
+        column: column ?? 0,
       };
 
       // loc.line = response.value.line;
